@@ -1,0 +1,8 @@
+services:
+  main:
+    build: .
+    volumes:
+      - .:/app
+      - ./samplephotos:/photos
+      - ./classified:/classified
+#      - /Volumes/2TB/Dropbox/カメラアップロード:/photos

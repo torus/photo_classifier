@@ -13,6 +13,14 @@ except ImportError:
     print("Error: Pillow not installed. Install with: pip install Pillow")
     exit(1)
 
+# Try to import and register pillow-heif for HEIC support
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    print("Warning: pillow-heif not installed. HEIC files will be skipped.")
+    print("Install with: pip install pillow-heif")
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -57,7 +65,13 @@ class PhotoClassifier:
         
         try:
             image = Image.open(image_path)
-            exif = image._getexif()
+            
+            # Get EXIF data - handle both standard and HEIC formats
+            exif = None
+            if hasattr(image, '_getexif'):
+                exif = image._getexif()
+            elif hasattr(image, 'getexif'):
+                exif = image.getexif()
             
             if not exif:
                 return exif_data
@@ -111,10 +125,16 @@ class PhotoClassifier:
     def get_date_from_filename(self, filename):
         """Try to extract date from filename as fallback"""
         try:
+            # Try YYYY-MM-DD HH.MM.SS format (common for iPhone)
+            if ' ' in filename:
+                date_part = filename.split(' ')[0]
+                return datetime.strptime(date_part, '%Y-%m-%d').strftime('%Y-%m-%d')
+            
+            # Try YYYYMMDD format
             parts = filename.split('_')
             for part in parts:
-                if len(part) == 8 and part.isdigit():
-                    return datetime.strptime(part, '%Y%m%d').strftime('%Y-%m-%d')
+                if len(part) >= 8 and part[:8].isdigit():
+                    return datetime.strptime(part[:8], '%Y%m%d').strftime('%Y-%m-%d')
         except:
             pass
         return None

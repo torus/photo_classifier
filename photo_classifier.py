@@ -1,3 +1,4 @@
+
 import os
 import sqlite3
 import shutil
@@ -8,7 +9,7 @@ import logging
 
 try:
     from PIL import Image
-    from PIL.ExifTags import TAGS
+    from PIL.ExifTags import TAGS, GPSTAGS
 except ImportError:
     print("Error: Pillow not installed. Install with: pip install Pillow")
     exit(1)
@@ -66,15 +67,21 @@ class PhotoClassifier:
         try:
             image = Image.open(image_path)
             
-            # Get EXIF data - handle both standard and HEIC formats
+            # Try different methods to get EXIF
             exif = None
-            if hasattr(image, '_getexif'):
-                exif = image._getexif()
-            elif hasattr(image, 'getexif'):
+            try:
                 exif = image.getexif()
+            except:
+                try:
+                    exif = image._getexif()
+                except:
+                    pass
             
             if not exif:
+                logger.debug(f"No EXIF data found in {image_path.name}")
                 return exif_data
+            
+            logger.debug(f"EXIF keys for {image_path.name}: {list(exif.keys())}")
             
             for tag_id, value in exif.items():
                 tag_name = TAGS.get(tag_id, tag_id)
@@ -82,45 +89,74 @@ class PhotoClassifier:
                 # Extract datetime
                 if tag_name == 'DateTime':
                     exif_data['date'] = value
+                    logger.debug(f"Found DateTime: {value}")
                 
-                # Extract GPS latitude
+                # Extract GPS info
                 elif tag_name == 'GPSInfo':
-                    gps_data = self.parse_gps(value)
+                    gps_data = self.parse_gps_ifd(value)
                     if gps_data:
                         exif_data['latitude'] = gps_data[0]
                         exif_data['longitude'] = gps_data[1]
+                        logger.debug(f"Found GPS: {gps_data}")
                 
                 # Extract camera model
                 elif tag_name == 'Model':
                     exif_data['camera_model'] = value
+                    logger.debug(f"Found Model: {value}")
             
         except Exception as e:
             logger.warning(f"Error reading EXIF from {image_path}: {e}")
         
         return exif_data
     
-    def parse_gps(self, gps_info):
+    def parse_gps_ifd(self, gps_ifd):
         """Parse GPS IFD to get latitude and longitude"""
         try:
-            lat = self.convert_to_degrees(gps_info[2])
-            lon = self.convert_to_degrees(gps_info[4])
+            gps_data = {}
             
-            # Apply direction (N/S, E/W)
-            if gps_info[1] == 'S':
+            for tag_id, value in gps_ifd.items():
+                tag_name = GPSTAGS.get(tag_id, tag_id)
+                gps_data[tag_name] = value
+            
+            logger.debug(f"GPS data: {gps_data}")
+            
+            if 'GPSLatitude' not in gps_data or 'GPSLongitude' not in gps_data:
+                return None
+            
+            lat = self.convert_to_degrees(gps_data['GPSLatitude'])
+            lon = self.convert_to_degrees(gps_data['GPSLongitude'])
+            
+            # Apply direction
+            if gps_data.get('GPSLatitudeRef') == 'S':
                 lat = -lat
-            if gps_info[3] == 'W':
+            if gps_data.get('GPSLongitudeRef') == 'W':
                 lon = -lon
             
             return (lat, lon)
         except Exception as e:
-            logger.warning(f"Error parsing GPS data: {e}")
+            logger.debug(f"Error parsing GPS IFD: {e}")
             return None
     
     @staticmethod
     def convert_to_degrees(value):
         """Convert GPS coordinates to degrees"""
-        d, m, s = value
-        return d + (m / 60.0) + (s / 3600.0)
+        try:
+            d = value[0]
+            m = value[1]
+            s = value[2]
+            
+            # Handle both float and Fraction types
+            if hasattr(d, 'numerator'):
+                d = d.numerator / d.denominator
+            if hasattr(m, 'numerator'):
+                m = m.numerator / m.denominator
+            if hasattr(s, 'numerator'):
+                s = s.numerator / s.denominator
+            
+            return float(d) + (float(m) / 60.0) + (float(s) / 3600.0)
+        except Exception as e:
+            logger.debug(f"Error converting GPS coordinates: {e}")
+            return None
     
     def get_date_from_filename(self, filename):
         """Try to extract date from filename as fallback"""
@@ -135,19 +171,23 @@ class PhotoClassifier:
             for part in parts:
                 if len(part) >= 8 and part[:8].isdigit():
                     return datetime.strptime(part[:8], '%Y%m%d').strftime('%Y-%m-%d')
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Error extracting date from filename {filename}: {e}")
+        
         return None
     
     def process_photo(self, image_path):
         """Process a single photo: extract EXIF, classify by date, store metadata"""
         try:
+            logger.info(f"Processing: {image_path.name}")
             exif_data = self.extract_exif(image_path)
             taken_date = exif_data['date']
             
             # Fallback to filename if no EXIF date found
             if not taken_date:
                 taken_date = self.get_date_from_filename(image_path.name)
+                if taken_date:
+                    logger.info(f"Using date from filename for {image_path.name}: {taken_date}")
             
             if not taken_date:
                 logger.warning(f"No date found for {image_path.name}, skipping")
@@ -188,10 +228,11 @@ class PhotoClassifier:
                 ))
                 conn.commit()
             
-            logger.info(f"Processed: {image_path.name} -> {new_path}")
+            logger.info(f"Successfully processed: {image_path.name} -> {new_path}")
+            logger.debug(f"EXIF data stored - GPS: ({exif_data['latitude']}, {exif_data['longitude']}), Model: {exif_data['camera_model']}")
             
         except Exception as e:
-            logger.error(f"Error processing {image_path.name}: {e}")
+            logger.error(f"Error processing {image_path.name}: {e}", exc_info=True)
     
     def run(self):
         """Main execution: scan photos directory and process all images"""
@@ -219,7 +260,7 @@ class PhotoClassifier:
                 try:
                     future.result()
                 except Exception as e:
-                    logger.error(f"Error in thread: {e}")
+                    logger.error(f"Error in thread: {e}", exc_info=True)
         
         logger.info("Processing complete!")
 

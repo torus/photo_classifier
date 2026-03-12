@@ -132,23 +132,28 @@ class PhotoClassifier:
                 logger.debug(f"No EXIF in {image_path.name}")
                 return exif_data
             
-            logger.debug(f"EXIF keys: {list(exif.keys())}")
+            logger.info(f"EXIF keys for {image_path.name}: {list(exif.keys())}")
             
             for tag_id, value in exif.items():
                 tag_name = TAGS.get(tag_id, tag_id)
                 
                 if tag_name == 'DateTime':
                     exif_data['date'] = value
-                    logger.debug(f"DateTime: {value}")
+                    logger.info(f"DateTime: {value}")
                 elif tag_name == 'GPSInfo':
+                    logger.info(f"GPSInfo found (raw): {value}")
                     gps_data = self.parse_gps_ifd(value)
                     if gps_data:
                         exif_data['latitude'] = gps_data[0]
                         exif_data['longitude'] = gps_data[1]
-                        logger.debug(f"GPS: {gps_data}")
+                        logger.info(f"Parsed GPS: lat={gps_data[0]}, lon={gps_data[1]}")
+                    else:
+                        logger.info("Failed to parse GPS data")
                 elif tag_name == 'Model':
                     exif_data['camera_model'] = value
-                    logger.debug(f"Model: {value}")
+                    logger.info(f"Model: {value}")
+            
+            logger.info(f"Final EXIF data for {image_path.name}: {exif_data}")
             
         except Exception as e:
             logger.error(f"Error reading EXIF from {image_path}: {e}")
@@ -158,25 +163,32 @@ class PhotoClassifier:
     def parse_gps_ifd(self, gps_ifd):
         """Parse GPS IFD"""
         try:
+            logger.info(f"Parsing GPS IFD with {len(gps_ifd)} items")
             gps_data = {}
             for tag_id, value in gps_ifd.items():
                 tag_name = GPSTAGS.get(tag_id, tag_id)
                 gps_data[tag_name] = value
+                logger.info(f"GPS tag '{tag_name}' (id={tag_id}): {value}")
             
             if 'GPSLatitude' not in gps_data or 'GPSLongitude' not in gps_data:
+                logger.warning(f"Missing GPSLatitude or GPSLongitude. Available tags: {list(gps_data.keys())}")
                 return None
             
             lat = self.convert_to_degrees(gps_data['GPSLatitude'])
             lon = self.convert_to_degrees(gps_data['GPSLongitude'])
+            
+            if lat is None or lon is None:
+                return None
             
             if gps_data.get('GPSLatitudeRef') == 'S':
                 lat = -lat
             if gps_data.get('GPSLongitudeRef') == 'W':
                 lon = -lon
             
+            logger.info(f"Successfully parsed GPS: ({lat}, {lon})")
             return (lat, lon)
         except Exception as e:
-            logger.debug(f"Error parsing GPS: {e}")
+            logger.error(f"Error parsing GPS: {e}", exc_info=True)
             return None
     
     @staticmethod
@@ -192,9 +204,11 @@ class PhotoClassifier:
             if hasattr(s, 'numerator'):
                 s = s.numerator / s.denominator
             
-            return float(d) + (float(m) / 60.0) + (float(s) / 3600.0)
+            result = float(d) + (float(m) / 60.0) + (float(s) / 3600.0)
+            logger.debug(f"Converted GPS: {value} -> {result}")
+            return result
         except Exception as e:
-            logger.debug(f"Error converting degrees: {e}")
+            logger.error(f"Error converting degrees: {e}")
             return None
     
     def get_date_from_filename(self, filename):

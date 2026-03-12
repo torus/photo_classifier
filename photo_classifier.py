@@ -26,7 +26,7 @@ except ImportError:
     print("Install with: pip install pillow-heif")
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Configuration
@@ -48,7 +48,6 @@ def ensure_heif_support():
             import pillow_heif
             pillow_heif.register_heif_opener()
             _thread_local.heif_registered = True
-            logger.debug("HEIF support registered for thread")
         except Exception as e:
             logger.warning(f"Failed to register HEIF support: {e}")
 
@@ -81,7 +80,6 @@ class PhotoClassifier:
             with open(file_path, 'rb') as f:
                 header = f.read(12)
                 if len(header) >= 8 and header[4:8] == b'ftyp':
-                    logger.debug(f"Valid HEIC header: {file_path.name}")
                     return True
                 logger.warning(f"Invalid HEIC header: {file_path.name}")
                 return False
@@ -111,7 +109,6 @@ class PhotoClassifier:
                     with open(image_path, 'rb') as f:
                         image_bytes = io.BytesIO(f.read())
                     image = Image.open(image_bytes)
-                    logger.debug(f"Opened HEIC from memory: {image_path.name}")
                 except Exception as e:
                     logger.warning(f"Failed to open HEIC {image_path.name}: {e}")
                     return exif_data
@@ -128,49 +125,36 @@ class PhotoClassifier:
                     exif = None
             
             if not exif:
-                logger.debug(f"No EXIF in {image_path.name}")
                 return exif_data
-            
-            logger.info(f"EXIF keys for {image_path.name}: {list(exif.keys())}")
             
             for tag_id, value in exif.items():
                 tag_name = TAGS.get(tag_id, tag_id)
                 
                 if tag_name == 'DateTime':
                     exif_data['date'] = value
-                    logger.info(f"DateTime: {value}")
                 elif tag_name == 'Model':
                     exif_data['camera_model'] = value
-                    logger.info(f"Model: {value}")
             
             # Try to get GPS from IFD (works better with HEIC)
             try:
                 ifd = exif.get_ifd(0x8825)  # 0x8825 is GPSInfo tag
                 if ifd:
-                    logger.info(f"GPS IFD found with {len(ifd)} items")
                     gps_data = self.parse_gps_ifd(ifd)
                     if gps_data:
                         exif_data['latitude'] = gps_data[0]
                         exif_data['longitude'] = gps_data[1]
-                        logger.info(f"Successfully extracted GPS: {gps_data}")
             except Exception as e:
-                logger.debug(f"Could not read GPS IFD: {e}")
-                
                 # Fallback: try to parse GPSInfo if it exists as a dict
                 if 34853 in exif:
                     gps_value = exif[34853]
-                    logger.info(f"GPSInfo raw value type: {type(gps_value)}")
                     if isinstance(gps_value, dict):
                         gps_data = self.parse_gps_ifd(gps_value)
                         if gps_data:
                             exif_data['latitude'] = gps_data[0]
                             exif_data['longitude'] = gps_data[1]
-                            logger.info(f"GPS parsed from dict: {gps_data}")
-            
-            logger.info(f"Final EXIF data for {image_path.name}: {exif_data}")
             
         except Exception as e:
-            logger.error(f"Error reading EXIF from {image_path}: {e}", exc_info=True)
+            logger.error(f"Error reading EXIF from {image_path}: {e}")
         
         return exif_data
     
@@ -178,17 +162,14 @@ class PhotoClassifier:
         """Parse GPS IFD"""
         try:
             if not isinstance(gps_ifd, dict):
-                logger.warning(f"GPS IFD is not a dict, got {type(gps_ifd)}")
                 return None
                 
             gps_data = {}
             for tag_id, value in gps_ifd.items():
                 tag_name = GPSTAGS.get(tag_id, tag_id)
                 gps_data[tag_name] = value
-                logger.info(f"GPS tag '{tag_name}' (id={tag_id}): {value}")
             
             if 'GPSLatitude' not in gps_data or 'GPSLongitude' not in gps_data:
-                logger.warning(f"Missing GPSLatitude or GPSLongitude. Available: {list(gps_data.keys())}")
                 return None
             
             lat = self.convert_to_degrees(gps_data['GPSLatitude'])
@@ -202,10 +183,9 @@ class PhotoClassifier:
             if gps_data.get('GPSLongitudeRef') == 'W':
                 lon = -lon
             
-            logger.info(f"Successfully parsed GPS: ({lat}, {lon})")
             return (lat, lon)
         except Exception as e:
-            logger.error(f"Error parsing GPS: {e}", exc_info=True)
+            logger.error(f"Error parsing GPS: {e}")
             return None
     
     @staticmethod
@@ -222,7 +202,6 @@ class PhotoClassifier:
                 s = s.numerator / s.denominator
             
             result = float(d) + (float(m) / 60.0) + (float(s) / 3600.0)
-            logger.debug(f"Converted GPS: {value} -> {result}")
             return result
         except Exception as e:
             logger.error(f"Error converting degrees: {e}")
@@ -240,21 +219,18 @@ class PhotoClassifier:
                 if len(part) >= 8 and part[:8].isdigit():
                     return datetime.strptime(part[:8], '%Y%m%d').strftime('%Y-%m-%d')
         except Exception as e:
-            logger.debug(f"Error extracting date from filename: {e}")
+            pass
         
         return None
     
     def process_photo(self, image_path):
         """Process a single photo"""
         try:
-            logger.info(f"Processing: {image_path.name}")
             exif_data = self.extract_exif(image_path)
             taken_date = exif_data['date']
             
             if not taken_date:
                 taken_date = self.get_date_from_filename(image_path.name)
-                if taken_date:
-                    logger.info(f"Using filename date: {taken_date}")
             
             if not taken_date:
                 logger.warning(f"No date for {image_path.name}, skipping")
@@ -291,10 +267,8 @@ class PhotoClassifier:
                 ))
                 conn.commit()
             
-            logger.info(f"Done: {image_path.name} -> {new_path}")
-            
         except Exception as e:
-            logger.error(f"Error processing {image_path.name}: {e}", exc_info=True)
+            logger.error(f"Error processing {image_path.name}: {e}")
     
     def run(self):
         """Main execution"""
@@ -311,8 +285,6 @@ class PhotoClassifier:
             if entry.is_file() and entry.name.lower().endswith(supported_formats):
                 image_files.append(Path(entry.path))
         
-        logger.info(f"Found {len(image_files)} image files")
-        
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {executor.submit(self.process_photo, img): img for img in image_files}
             for future in as_completed(futures):
@@ -320,8 +292,6 @@ class PhotoClassifier:
                     future.result()
                 except Exception as e:
                     logger.error(f"Thread error: {e}")
-        
-        logger.info("Processing complete!")
 
 if __name__ == '__main__':
     classifier = PhotoClassifier()

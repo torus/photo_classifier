@@ -118,15 +118,14 @@ class PhotoClassifier:
             else:
                 image = Image.open(image_path)
             
-            # Extract EXIF
-            exif = None
+            # Extract EXIF - use getexif() with IFD access for HEIC
             try:
                 exif = image.getexif()
             except:
                 try:
                     exif = image._getexif()
                 except:
-                    pass
+                    exif = None
             
             if not exif:
                 logger.debug(f"No EXIF in {image_path.name}")
@@ -140,30 +139,48 @@ class PhotoClassifier:
                 if tag_name == 'DateTime':
                     exif_data['date'] = value
                     logger.info(f"DateTime: {value}")
-                elif tag_name == 'GPSInfo':
-                    logger.info(f"GPSInfo found (raw): {value}")
-                    gps_data = self.parse_gps_ifd(value)
-                    if gps_data:
-                        exif_data['latitude'] = gps_data[0]
-                        exif_data['longitude'] = gps_data[1]
-                        logger.info(f"Parsed GPS: lat={gps_data[0]}, lon={gps_data[1]}")
-                    else:
-                        logger.info("Failed to parse GPS data")
                 elif tag_name == 'Model':
                     exif_data['camera_model'] = value
                     logger.info(f"Model: {value}")
             
+            # Try to get GPS from IFD (works better with HEIC)
+            try:
+                ifd = exif.get_ifd(0x8825)  # 0x8825 is GPSInfo tag
+                if ifd:
+                    logger.info(f"GPS IFD found with {len(ifd)} items")
+                    gps_data = self.parse_gps_ifd(ifd)
+                    if gps_data:
+                        exif_data['latitude'] = gps_data[0]
+                        exif_data['longitude'] = gps_data[1]
+                        logger.info(f"Successfully extracted GPS: {gps_data}")
+            except Exception as e:
+                logger.debug(f"Could not read GPS IFD: {e}")
+                
+                # Fallback: try to parse GPSInfo if it exists as a dict
+                if 34853 in exif:
+                    gps_value = exif[34853]
+                    logger.info(f"GPSInfo raw value type: {type(gps_value)}")
+                    if isinstance(gps_value, dict):
+                        gps_data = self.parse_gps_ifd(gps_value)
+                        if gps_data:
+                            exif_data['latitude'] = gps_data[0]
+                            exif_data['longitude'] = gps_data[1]
+                            logger.info(f"GPS parsed from dict: {gps_data}")
+            
             logger.info(f"Final EXIF data for {image_path.name}: {exif_data}")
             
         except Exception as e:
-            logger.error(f"Error reading EXIF from {image_path}: {e}")
+            logger.error(f"Error reading EXIF from {image_path}: {e}", exc_info=True)
         
         return exif_data
     
     def parse_gps_ifd(self, gps_ifd):
         """Parse GPS IFD"""
         try:
-            logger.info(f"Parsing GPS IFD with {len(gps_ifd)} items")
+            if not isinstance(gps_ifd, dict):
+                logger.warning(f"GPS IFD is not a dict, got {type(gps_ifd)}")
+                return None
+                
             gps_data = {}
             for tag_id, value in gps_ifd.items():
                 tag_name = GPSTAGS.get(tag_id, tag_id)
@@ -171,7 +188,7 @@ class PhotoClassifier:
                 logger.info(f"GPS tag '{tag_name}' (id={tag_id}): {value}")
             
             if 'GPSLatitude' not in gps_data or 'GPSLongitude' not in gps_data:
-                logger.warning(f"Missing GPSLatitude or GPSLongitude. Available tags: {list(gps_data.keys())}")
+                logger.warning(f"Missing GPSLatitude or GPSLongitude. Available: {list(gps_data.keys())}")
                 return None
             
             lat = self.convert_to_degrees(gps_data['GPSLatitude'])

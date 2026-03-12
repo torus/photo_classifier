@@ -1,4 +1,3 @@
-
 import os
 import sqlite3
 import shutil
@@ -6,24 +5,29 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import logging
+import sys
 
 try:
     from PIL import Image
     from PIL.ExifTags import TAGS, GPSTAGS
 except ImportError:
     print("Error: Pillow not installed. Install with: pip install Pillow")
-    exit(1)
+    sys.exit(1)
 
-# Try to import and register pillow-heif for HEIC support
+# Register HEIC support BEFORE any Image operations
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
+    logger_init = logging.getLogger(__name__)
+    logger_init.info("pillow-heif registered successfully")
 except ImportError:
     print("Warning: pillow-heif not installed. HEIC files will be skipped.")
     print("Install with: pip install pillow-heif")
+except Exception as e:
+    print(f"Warning: Failed to register pillow-heif: {e}")
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Configuration
@@ -55,6 +59,22 @@ class PhotoClassifier:
             ''')
             conn.commit()
     
+    def is_valid_heic(self, file_path):
+        """Check if file has HEIC magic bytes"""
+        try:
+            with open(file_path, 'rb') as f:
+                header = f.read(12)
+                # HEIC files should have 'ftyp' at offset 4
+                if len(header) >= 8:
+                    if header[4:8] == b'ftyp':
+                        logger.debug(f"Valid HEIC header found in {file_path}")
+                        return True
+                logger.warning(f"Invalid HEIC header in {file_path}")
+                return False
+        except Exception as e:
+            logger.warning(f"Cannot check HEIC validity for {file_path}: {e}")
+            return False
+    
     def extract_exif(self, image_path):
         """Extract EXIF data from image, focusing on date and GPS"""
         exif_data = {
@@ -65,17 +85,30 @@ class PhotoClassifier:
         }
         
         try:
+            # For HEIC files, validate format first
+            if image_path.suffix.lower() == '.heic':
+                if not self.is_valid_heic(image_path):
+                    logger.warning(f"Invalid HEIC file: {image_path.name}")
+                    return exif_data
+            
+            logger.debug(f"Opening image: {image_path.name}")
             image = Image.open(image_path)
+            logger.debug(f"Image format: {image.format}")
             
             # Try different methods to get EXIF
             exif = None
             try:
                 exif = image.getexif()
-            except:
+                if exif:
+                    logger.debug(f"EXIF obtained via getexif()")
+            except Exception as e:
+                logger.debug(f"getexif() failed: {e}")
                 try:
                     exif = image._getexif()
-                except:
-                    pass
+                    if exif:
+                        logger.debug(f"EXIF obtained via _getexif()")
+                except Exception as e2:
+                    logger.debug(f"_getexif() also failed: {e2}")
             
             if not exif:
                 logger.debug(f"No EXIF data found in {image_path.name}")
@@ -105,7 +138,7 @@ class PhotoClassifier:
                     logger.debug(f"Found Model: {value}")
             
         except Exception as e:
-            logger.warning(f"Error reading EXIF from {image_path}: {e}")
+            logger.error(f"Error reading EXIF from {image_path}: {e}", exc_info=True)
         
         return exif_data
     
@@ -229,7 +262,6 @@ class PhotoClassifier:
                 conn.commit()
             
             logger.info(f"Successfully processed: {image_path.name} -> {new_path}")
-            logger.debug(f"EXIF data stored - GPS: ({exif_data['latitude']}, {exif_data['longitude']}), Model: {exif_data['camera_model']}")
             
         except Exception as e:
             logger.error(f"Error processing {image_path.name}: {e}", exc_info=True)

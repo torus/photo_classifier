@@ -1,9 +1,10 @@
+import os
 import sqlite3
 from pathlib import Path
 from datetime import datetime
 
 # Configuration
-DB_PATH = Path('/classified/photos.db')
+DB_PATH = Path(os.environ.get('DB_PATH', '/classified/photos.db'))
 
 # Milan coordinates and search radius
 MILAN_LAT = 45.4642

@@ -1,3 +1,4 @@
+import argparse
 import os
 import sqlite3
 import shutil
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 PHOTOS_DIR = Path('/photos')
 CLASSIFIED_DIR = Path('/classified')
-DB_PATH = Path('/classified/photos.db')
+DB_PATH = Path(os.environ.get('DB_PATH', '/classified/photos.db'))
 MAX_WORKERS = 4
 
 # Thread-local storage for HEIF opener registration
@@ -52,9 +53,13 @@ def ensure_heif_support():
             logger.warning(f"Failed to register HEIF support: {e}")
 
 class PhotoClassifier:
-    def __init__(self):
+    def __init__(self, dry_run=False):
         self.db_path = DB_PATH
-        self.init_database()
+        self.dry_run = dry_run
+        if not dry_run:
+            CLASSIFIED_DIR.mkdir(parents=True, exist_ok=True)
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.init_database()
         
     def init_database(self):
         """Initialize SQLite database with photos table"""
@@ -127,13 +132,22 @@ class PhotoClassifier:
             if not exif:
                 return exif_data
             
+            date_time = None
             for tag_id, value in exif.items():
                 tag_name = TAGS.get(tag_id, tag_id)
-                
+
                 if tag_name == 'DateTime':
-                    exif_data['date'] = value
+                    date_time = value
                 elif tag_name == 'Model':
                     exif_data['camera_model'] = value
+
+            # Prefer DateTimeOriginal (capture time, in the Exif sub-IFD 0x8769)
+            # over IFD0 DateTime, which is the last-modified time.
+            try:
+                date_original = exif.get_ifd(0x8769).get(0x9003)
+            except Exception:
+                date_original = None
+            exif_data['date'] = date_original or date_time
             
             # Try to get GPS from IFD (works better with HEIC)
             try:
@@ -246,26 +260,41 @@ class PhotoClassifier:
             day = date_obj.strftime('%d')
             
             target_dir = CLASSIFIED_DIR / year / month / day
-            target_dir.mkdir(parents=True, exist_ok=True)
-            
             new_path = target_dir / image_path.name
-            shutil.move(str(image_path), str(new_path))
-            
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute('''
-                    INSERT INTO photos 
-                    (filename, original_path, new_path, taken_date, latitude, longitude, camera_model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    image_path.name,
-                    str(image_path),
-                    str(new_path),
-                    date_obj.isoformat(),
-                    exif_data['latitude'],
-                    exif_data['longitude'],
-                    exif_data['camera_model']
-                ))
-                conn.commit()
+            if new_path.exists():
+                logger.warning(
+                    f"Duplicate: {new_path} already exists, skipping {image_path}"
+                )
+                return
+
+            if self.dry_run:
+                print(f"[dry-run] {image_path} -> {new_path}")
+                return
+
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            # Insert into the DB first, then move. The transaction is committed
+            # only if the move succeeds; otherwise it is rolled back, so the DB
+            # never records a photo that wasn't moved.
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            try:
+                with conn:  # commits on success, rolls back on exception
+                    conn.execute('''
+                        INSERT INTO photos
+                        (filename, original_path, new_path, taken_date, latitude, longitude, camera_model)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        image_path.name,
+                        str(image_path),
+                        str(new_path),
+                        date_obj.isoformat(),
+                        exif_data['latitude'],
+                        exif_data['longitude'],
+                        exif_data['camera_model']
+                    ))
+                    shutil.move(str(image_path), str(new_path))
+            finally:
+                conn.close()
             
         except Exception as e:
             logger.error(f"Error processing {image_path.name}: {e}")
@@ -275,9 +304,7 @@ class PhotoClassifier:
         if not PHOTOS_DIR.exists():
             logger.error(f"Photos directory not found: {PHOTOS_DIR}")
             return
-        
-        CLASSIFIED_DIR.mkdir(parents=True, exist_ok=True)
-        
+
         image_files = []
         supported_formats = ('.jpg', '.jpeg', '.heic', '.png', '.gif', '.bmp')
         
@@ -294,5 +321,10 @@ class PhotoClassifier:
                     logger.error(f"Thread error: {e}")
 
 if __name__ == '__main__':
-    classifier = PhotoClassifier()
+    parser = argparse.ArgumentParser(description='Classify photos into YYYY/MM/DD folders')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='show what would be moved without moving files or writing the DB')
+    args = parser.parse_args()
+
+    classifier = PhotoClassifier(dry_run=args.dry_run)
     classifier.run()

@@ -2,3 +2,5 @@
 /classified/
 *~
 .DS_Store
+.env
+/db/

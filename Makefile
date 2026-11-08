@@ -14,11 +14,16 @@ dry-run:
 query:
 	$(COMPOSE) run --rm main python query_photos_by_city.py
 
+# Copies the newest SAMPLE_COUNT photos from SAMPLE_SRC (default: PHOTOS_DIR
+# in .env) into ./samplephotos. Files are copied; the source is not changed.
+# Override with e.g. `make run SAMPLE_COUNT=10 SAMPLE_SRC=/some/folder`.
+SAMPLE_SRC ?= $(shell sed -n 's/^PHOTOS_DIR=//p' .env 2>/dev/null)
+SAMPLE_COUNT ?= 40
+
 setup-samples:
-	rm -rf ./samplephotos/*
-	mkdir -p ./samplephotos
-	rm -rf ./classified/*
-	mkdir -p ./classified
-	rm -rf ./db/*
-	mkdir -p ./db
-	cp /Volumes/2TB/Dropbox/カメラアップロード/2026-02-*.heic ./samplephotos
+	@test -d "$(SAMPLE_SRC)" || { echo "Sample source not found: '$(SAMPLE_SRC)'. Set PHOTOS_DIR in .env or pass SAMPLE_SRC=..."; exit 1; }
+	rm -rf ./samplephotos ./classified ./db
+	mkdir -p ./samplephotos ./classified ./db
+	ls "$(SAMPLE_SRC)" | grep -iE '\.(heic|jpe?g|png)$$' | sort | tail -n $(SAMPLE_COUNT) | \
+	  while IFS= read -r f; do cp -p "$(SAMPLE_SRC)/$$f" ./samplephotos/; done
+	@echo "Copied $$(ls ./samplephotos | wc -l | tr -d ' ') sample photos from $(SAMPLE_SRC)"

@@ -8,7 +8,7 @@ from datetime import datetime
 import logging
 import sys
 import io
-from threading import local
+from threading import local, Lock
 
 try:
     from PIL import Image
@@ -38,6 +38,10 @@ MAX_WORKERS = 4
 
 # Thread-local storage for HEIF opener registration
 _thread_local = local()
+
+# print() writes the text and the newline separately, so output from
+# worker threads can end up on one line without a lock.
+_print_lock = Lock()
 
 def ensure_heif_support():
     """Ensure HEIF support is registered in current thread"""
@@ -268,7 +272,8 @@ class PhotoClassifier:
                 return
 
             if self.dry_run:
-                print(f"[dry-run] {image_path} -> {new_path}")
+                with _print_lock:
+                    print(f"[dry-run] {image_path} -> {new_path}")
                 return
 
             target_dir.mkdir(parents=True, exist_ok=True)

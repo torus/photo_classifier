@@ -11,8 +11,10 @@ run: setup-samples
 dry-run:
 	$(COMPOSE) run --rm main python photo_classifier.py --dry-run
 
+# Usage: make query CITY="Valencia, Spain" [RADIUS=30]
 query:
-	$(COMPOSE) run --rm main python query_photos_by_city.py
+	@test -n "$(CITY)" || { echo 'Usage: make query CITY="Valencia, Spain" [RADIUS=30]'; exit 1; }
+	$(COMPOSE) run --rm main python query_photos_by_city.py "$(CITY)" $(if $(RADIUS),--radius $(RADIUS))
 
 # Copies the newest SAMPLE_COUNT photos from SAMPLE_SRC (default: PHOTOS_DIR
 # in .env) into ./samplephotos. Files are copied; the source is not changed.
